@@ -1,0 +1,49 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      MONGODB_URI: "${MONGODB_URI}"
+      MONGODB_DATABASE: "${MONGODB_DATABASE:-cabgo_admin}"
+      JWT_SECRET: "${JWT_SECRET}"
+      CORS_ORIGINS: "${CORS_ORIGINS}"
+      AISENSY_API_KEY: "${AISENSY_API_KEY:-}"
+      AISENSY_PROJECT_API_KEY: "${AISENSY_PROJECT_API_KEY:-}"
+      AISENSY_CAMPAIGN_NAME: "${AISENSY_CAMPAIGN_NAME:-}"
+      AISENSY_USER_NAME: "${AISENSY_USER_NAME:-}"
+      AISENSY_WHATSAPP_NUMBER: "${AISENSY_WHATSAPP_NUMBER:-}"
+      AISENSY_WEBHOOK_URL: "${AISENSY_WEBHOOK_URL:-}"
+      AISENSY_MESSAGE_API_URL: "${AISENSY_MESSAGE_API_URL:-}"
+      GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    ports:
+      - "8082:8081"
+
+  frontend:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - mongo
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      BACKEND_URL: http://backend:8081
+      MONGODB_URI: "${MONGODB_URI}"
+    ports:
+      - "4000:4000"
+
+volumes:
+  mongo_data:

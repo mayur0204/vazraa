@@ -1,0 +1,6 @@
+﻿[SUCCESS] 200 - http://localhost:4000/api/health
+[SUCCESS] 200 - http://localhost:4000/api/admin/stats
+[SUCCESS] 200 - http://localhost:4000/api/super-admin/monitoring
+[SUCCESS] 200 - http://localhost:3002/api/actuator/health
+[ERROR] 400 - http://localhost:3002/api/messages/whatsapp/track?phone=9999999999 - The remote server returned an error: (400) Bad Request.
+[ERROR] 400 - http://localhost:4000/api/messages/whatsapp/track?phone=9999999999 - The remote server returned an error: (400) Bad Request.
