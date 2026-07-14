@@ -28,7 +28,7 @@ services:
       GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     ports:
-      - "8082:3002"
+      - "3002:3002"
 
   frontend:
     build:
