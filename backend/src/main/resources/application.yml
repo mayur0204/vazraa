@@ -1,7 +1,5 @@
 server:
   port: 3002
-  servlet:
-    context-path: /api
 
 spring:
   application:
