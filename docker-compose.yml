@@ -28,7 +28,7 @@ services:
       GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
     ports:
-      - "8082:8081"
+      - "8082:3002"
 
   frontend:
     build:
@@ -40,7 +40,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
-      BACKEND_URL: http://backend:8081
+      BACKEND_URL: http://backend:3002
       MONGODB_URI: "${MONGODB_URI}"
     ports:
       - "4000:4000"
