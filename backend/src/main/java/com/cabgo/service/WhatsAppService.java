@@ -13,11 +13,14 @@ import java.util.Map;
 
 /**
  * Sends WhatsApp messages via the AiSensy / bgsinfotech campaign-message API.
- * Endpoint : POST https://apis.aisensy.com/project-apis/v1/project/{projectId}/message/send
- * Auth     : X-AiSensy-Project-API-Pwd header
- * Payload  : { to, type, recipient_type, text: { body } }
  *
- * NOTE: sendButtons() intentionally degrades to plain text because interactive buttons require pre-approved WhatsApp templates.
+ * Endpoint : POST https://messages.bgsinfotech.com/messages/whatsapp
+ * Auth     : apiKey field inside the JSON body (not a header)
+ * Payload  : { apiKey, campaignName, destination, userName, templateParams, source,
+ *              media, buttons, carouselCards, location }
+ *
+ * NOTE: sendButtons() intentionally degrades to plain text because AiSensy
+ * interactive buttons require pre-approved WhatsApp templates.
  */
 @Slf4j
 @Service
@@ -84,14 +87,22 @@ public class WhatsAppService {
     // ── Internal helpers ───────────────────────────────────────────────────────
 
     /**
-     * Build the AiSensy Project API payload for a text message.
+     * Build the AiSensy campaign-message payload.
+     * The message body goes into templateParams[0] so that the approved
+     * template {{1}} placeholder is replaced at delivery time.
      */
     private Map<String, Object> buildPayload(String destination, String messageBody) {
         Map<String, Object> payload = new HashMap<>();
-        payload.put("to", destination);
-        payload.put("type", "text");
-        payload.put("recipient_type", "individual");
-        payload.put("text", Map.of("body", messageBody));
+        payload.put("apiKey",         apiKey);
+        payload.put("campaignName",   campaignName);
+        payload.put("destination",    destination);
+        payload.put("userName",       userName);
+        payload.put("templateParams", List.of(messageBody));
+        payload.put("source",         "api");
+        payload.put("media",          Map.of());
+        payload.put("buttons",        List.of());
+        payload.put("carouselCards",  List.of());
+        payload.put("location",       Map.of());
         return payload;
     }
 
@@ -134,10 +145,12 @@ public class WhatsAppService {
     }
 
     private void post(Map<String, Object> payload) {
-        String dest = (String) payload.get("to");
-        log.info("[WhatsApp Outbound] Preparing to send message via AiSensy Project API...");
+        String dest = (String) payload.get("destination");
+        log.info("[WhatsApp Outbound] Preparing to send message via AiSensy API...");
         log.info("[WhatsApp Outbound] Endpoint URL: {}", apiUrl);
-        log.info("[WhatsApp Outbound] Target Destination: {}", dest);
+        log.info("[WhatsApp Outbound] Target Destination (Normalized): {}", dest);
+        log.info("[WhatsApp Outbound] Campaign: {}", payload.get("campaignName"));
+        log.info("[WhatsApp Outbound] Template parameters: {}", payload.get("templateParams"));
 
         try {
             String json = objectMapper.writeValueAsString(payload);
@@ -146,8 +159,6 @@ public class WhatsAppService {
             Request request = new Request.Builder()
                     .url(apiUrl)
                     .addHeader("Content-Type", "application/json")
-                    .addHeader("Accept", "application/json")
-                    .addHeader("X-AiSensy-Project-API-Pwd", apiKey)
                     .post(RequestBody.create(json, JSON_MEDIA))
                     .build();
 
