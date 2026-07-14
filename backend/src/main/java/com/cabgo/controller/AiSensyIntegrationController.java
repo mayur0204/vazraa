@@ -24,7 +24,7 @@ import java.util.Random;
 
 @Slf4j
 @RestController
-@RequestMapping("/messages/whatsapp")
+@RequestMapping("/aisensy/api")
 @RequiredArgsConstructor
 public class AiSensyIntegrationController {
 

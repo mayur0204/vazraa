@@ -12,16 +12,14 @@ import java.util.Enumeration;
 /**
  * Webhook endpoint for AiSensy (bgsinfotech reseller).
  *
- * GET  /api/webhook/whatsapp  — webhook verification ping from AiSensy dashboard
- * POST /api/webhook/whatsapp  — incoming message events
+ * GET  /api/messages/whatsapp  — webhook verification ping from AiSensy dashboard
+ * POST /api/messages/whatsapp  — incoming message events
  *
- * IMPORTANT — after first deploy, watch Railway logs for the raw POST body printed
- * at INFO level. This tells you the exact field names AiSensy sends so you can
- * update WhatsAppWebhookService parsing if needed.
+ * This matches the yot chatbot setup which was already verified working.
  */
 @Slf4j
 @RestController
-@RequestMapping("/webhook/whatsapp")
+@RequestMapping("/messages/whatsapp")
 @RequiredArgsConstructor
 public class WhatsAppWebhookController {
 
