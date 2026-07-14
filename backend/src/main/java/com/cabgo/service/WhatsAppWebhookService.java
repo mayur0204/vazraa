@@ -17,13 +17,18 @@ public class WhatsAppWebhookService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * Parse the incoming Meta or AISensy WhatsApp API webhook payload and route to state machine.
+     * Parse the incoming AiSensy Project Webhook payload and route to state machine.
+     *
+     * AiSensy Project Webhook sends a flat JSON with these top-level fields:
+     *   phone_number, sender, message_type, message_content, user_name, status, etc.
+     *
+     * Also handles legacy topic-based and Meta WhatsApp formats as fallback.
      */
     public void processWebhookPayload(String payload) {
-        log.debug("Received WhatsApp webhook payload: {}", payload);
+        log.info("Received WhatsApp webhook payload: {}", payload);
         try {
             JsonNode root = objectMapper.readTree(payload);
-            
+
             String from = null;
             String type = null;
             String textBody = null;
@@ -32,166 +37,128 @@ public class WhatsAppWebhookService {
             String locationName = null;
             String interactiveReplyId = null;
 
-            // Check if it's an AISensy topic webhook
-            if (root.has("topic")) {
+            // ── AiSensy Project Webhook format ──────────────────────────────────
+            // Payload has top-level: phone_number, sender, message_type, message_content
+            if (root.has("phone_number")) {
+                log.info("Handling AiSensy Project Webhook format");
+
+                // Ignore messages sent by the bot itself (AGENT / API / SYSTEM)
+                String senderType = root.path("sender").asText("").trim().toUpperCase();
+                if ("AGENT".equals(senderType) || "API".equals(senderType) || "SYSTEM".equals(senderType)) {
+                    log.info("Ignoring outgoing/system message from sender type: {}", senderType);
+                    return;
+                }
+
+                from = root.path("phone_number").asText("").trim();
+                String messageType = root.path("message_type").asText("").toUpperCase();
+                JsonNode messageContent = root.path("message_content");
+
+                log.info("[Webhook Extractor] Extracted from: {}, message_type: {}", from, messageType);
+
+                switch (messageType) {
+                    case "TEXT", "ROOM_MESSAGE" -> {
+                        type = "text";
+                        // Try button_payload first (for quick reply taps), then plain text
+                        String buttonPayload = messageContent.path("button_payload").asText("").trim();
+                        String rawText = messageContent.path("text").asText("").trim();
+                        textBody = buttonPayload.isEmpty() ? rawText : buttonPayload;
+                        log.info("[Webhook Extractor] Extracted text: {}", textBody);
+                    }
+                    case "QUICK_REPLY", "QUICK_REPLY_CARD", "BUTTON_REPLY" -> {
+                        type = "text";
+                        String buttonPayload = messageContent.path("button_payload").asText("").trim();
+                        String rawText = messageContent.path("text").asText("").trim();
+                        textBody = buttonPayload.isEmpty() ? rawText : buttonPayload;
+                        interactiveReplyId = textBody;
+                        log.info("[Webhook Extractor] Extracted quick reply: {}", textBody);
+                    }
+                    case "LIST_REPLY", "LIST_MESSAGE" -> {
+                        type = "text";
+                        textBody = messageContent.path("text").asText("").trim();
+                        interactiveReplyId = textBody;
+                        log.info("[Webhook Extractor] Extracted list reply: {}", textBody);
+                    }
+                    case "LOCATION" -> {
+                        type = "location";
+                        locationLat = messageContent.path("latitude").asDouble();
+                        locationLng = messageContent.path("longitude").asDouble();
+                        locationName = messageContent.path("name").asText("");
+                        if (locationName.isEmpty()) {
+                            locationName = messageContent.path("address").asText("");
+                        }
+                        log.info("[Webhook Extractor] Extracted location: lat={}, lng={}, name={}", locationLat, locationLng, locationName);
+                    }
+                    case "IMAGE" -> {
+                        type = "image";
+                        textBody = messageContent.path("url").asText("");
+                        log.info("[Webhook Extractor] Extracted image URL: {}", textBody);
+                    }
+                    default -> {
+                        type = messageType.toLowerCase();
+                        textBody = messageContent.path("text").asText("");
+                        log.info("[Webhook Extractor] Unhandled message_type: {}, text: {}", messageType, textBody);
+                    }
+                }
+
+            // ── Legacy AiSensy topic-based format ───────────────────────────────
+            } else if (root.has("topic")) {
                 String topic = root.path("topic").asText();
                 log.info("Handling AISensy webhook topic: {}", topic);
-                
+
                 if ("message.status.updated".equals(topic)) {
-                    log.info("AISensy message status updated: {}", payload);
-                    return; // Ignore status updates in the chatbot logic
+                    log.info("AISensy message status updated - ignoring");
+                    return;
                 }
-                
+
                 if ("message.sender.user".equals(topic)) {
                     JsonNode data = root.path("data");
                     if (data.isMissingNode()) {
                         log.warn("AISensy message.sender.user webhook is missing 'data' object");
                         return;
                     }
-                    
-                    // Parse sender phone number with multiple robust fallbacks
+
                     JsonNode sender = data.path("sender");
                     if (!sender.isMissingNode()) {
-                        if (!sender.path("phone_number").isMissingNode()) {
-                            from = sender.path("phone_number").asText();
-                        } else if (!sender.path("phone").isMissingNode()) {
-                            from = sender.path("phone").asText();
-                        } else {
-                            from = sender.path("id").asText();
-                        }
+                        from = !sender.path("phone_number").isMissingNode()
+                                ? sender.path("phone_number").asText()
+                                : sender.path("phone").isMissingNode()
+                                        ? sender.path("id").asText()
+                                        : sender.path("phone").asText();
                     } else {
-                        // Fallback: check direct fields in data
-                        if (!data.path("phone").isMissingNode()) {
-                            from = data.path("phone").asText();
-                        } else if (!data.path("phone_number").isMissingNode()) {
-                            from = data.path("phone_number").asText();
-                        } else if (!data.path("from").isMissingNode()) {
-                            from = data.path("from").asText();
-                        }
+                        from = !data.path("phone_number").isMissingNode()
+                                ? data.path("phone_number").asText()
+                                : !data.path("phone").isMissingNode()
+                                        ? data.path("phone").asText()
+                                        : data.path("from").asText();
                     }
-                    
+
                     type = data.path("type").asText();
-                    log.info("[Webhook Extractor] Extracted from: {}, type: {}", from, type);
-                    
+                    log.info("[Webhook Extractor] topic format — from: {}, type: {}", from, type);
+
                     if ("text".equals(type)) {
-                        JsonNode bodyNode = data.path("body");
-                        if (bodyNode.isObject() && !bodyNode.path("text").isMissingNode()) {
-                            textBody = bodyNode.path("text").asText();
-                        } else if (!data.path("text").path("body").isMissingNode()) {
-                            textBody = data.path("text").path("body").asText();
-                        } else if (!data.path("text").isMissingNode() && data.path("text").isTextual()) {
-                            textBody = data.path("text").asText();
-                        } else if (!data.path("body").isMissingNode()) {
-                            textBody = data.path("body").isObject() 
-                                    ? data.path("body").path("text").asText() 
-                                    : data.path("body").asText();
-                        }
-                        log.info("[Webhook Extractor] Extracted text body: {}", textBody);
-                    } else if ("location".equals(type)) {
-                        JsonNode loc = data.path("location").isMissingNode() 
-                                ? data.path("body").path("location") 
-                                : data.path("location");
-                        if (!loc.isMissingNode()) {
-                            locationLat = loc.path("latitude").asDouble();
-                            locationLng = loc.path("longitude").asDouble();
-                            locationName = loc.path("name").asText();
-                            if (locationName == null || locationName.isEmpty()) {
-                                locationName = loc.path("address").asText();
-                            }
-                        }
-                        log.info("[Webhook Extractor] Extracted location: lat={}, lng={}, name={}", locationLat, locationLng, locationName);
-                    } else if ("interactive".equals(type)) {
-                        JsonNode interactive = data.path("interactive").isMissingNode() 
-                                ? data.path("body").path("interactive") 
-                                : data.path("interactive");
-                        if (!interactive.isMissingNode()) {
-                            String interactiveType = interactive.path("type").asText();
-                            if ("button_reply".equals(interactiveType)) {
-                                JsonNode reply = interactive.path("button_reply");
-                                interactiveReplyId = reply.path("id").asText();
-                                textBody = reply.path("title").asText();
-                            } else if ("list_reply".equals(interactiveType)) {
-                                JsonNode reply = interactive.path("list_reply");
-                                interactiveReplyId = reply.path("id").asText();
-                                textBody = reply.path("title").asText();
-                            }
-                        } else {
-                            JsonNode reply = data.path("button_reply").isMissingNode() 
-                                    ? data.path("list_reply") 
-                                    : data.path("button_reply");
-                            if (!reply.isMissingNode()) {
-                                interactiveReplyId = reply.path("id").asText();
-                                textBody = reply.path("title").asText();
-                            }
-                        }
-                        log.info("[Webhook Extractor] Extracted interactive reply: id={}, text={}", interactiveReplyId, textBody);
-                    } else if ("button".equals(type) || "button_reply".equals(type)) {
-                        JsonNode reply = data.path("button_reply").isMissingNode() 
-                                ? data.path("button") 
-                                : data.path("button_reply");
-                        if (!reply.isMissingNode()) {
-                            interactiveReplyId = reply.path("id").asText();
-                            textBody = reply.path("text").isMissingNode() 
-                                    ? reply.path("title").asText() 
-                                    : reply.path("text").asText();
-                        }
-                        log.info("[Webhook Extractor] Extracted button reply: id={}, text={}", interactiveReplyId, textBody);
-                    } else if ("list".equals(type) || "list_reply".equals(type)) {
-                        JsonNode reply = data.path("list_reply").isMissingNode() 
-                                ? data.path("list") 
-                                : data.path("list_reply");
-                        if (!reply.isMissingNode()) {
-                            interactiveReplyId = reply.path("id").asText();
-                            textBody = reply.path("title").isMissingNode() 
-                                    ? reply.path("description").asText() 
-                                    : reply.path("title").asText();
-                        }
-                        log.info("[Webhook Extractor] Extracted list reply: id={}, text={}", interactiveReplyId, textBody);
-                    } else if ("image".equals(type)) {
-                        JsonNode img = data.path("image").isMissingNode() 
-                                ? data.path("body").path("image") 
-                                : data.path("image");
-                        if (!img.isMissingNode()) {
-                            textBody = img.path("url").asText();
-                            if (textBody == null || textBody.isEmpty()) {
-                                textBody = img.path("id").asText();
-                            }
-                        }
-                        log.info("[Webhook Extractor] Extracted image URL/ID: {}", textBody);
-                    } else if ("document".equals(type)) {
-                        JsonNode doc = data.path("document").isMissingNode() 
-                                ? data.path("body").path("document") 
-                                : data.path("document");
-                        if (!doc.isMissingNode()) {
-                            textBody = doc.path("url").asText();
-                            if (textBody == null || textBody.isEmpty()) {
-                                textBody = doc.path("id").asText();
-                            }
-                        }
-                        log.info("[Webhook Extractor] Extracted document URL/ID: {}", textBody);
+                        textBody = !data.path("text").path("body").isMissingNode()
+                                ? data.path("text").path("body").asText()
+                                : data.path("body").isObject()
+                                        ? data.path("body").path("text").asText()
+                                        : data.path("body").asText();
                     }
                 } else {
                     log.info("Ignoring unhandled AISensy topic: {}", topic);
                     return;
                 }
+
             } else {
-                // Fallback: Parse standard Meta WhatsApp format
+                // ── Fallback: Meta WhatsApp Cloud API format ─────────────────────
                 JsonNode entry = root.path("entry").get(0);
                 if (entry == null) return;
-
                 JsonNode change = entry.path("changes").get(0);
                 if (change == null) return;
-
                 JsonNode value = change.path("value");
-                if (value == null) return;
-
-                // Check if there are messages
                 JsonNode messages = value.path("messages");
                 if (messages.isMissingNode() || messages.size() == 0) {
                     log.debug("No messages in webhook payload (likely a status update)");
                     return;
                 }
-
                 JsonNode message = messages.get(0);
                 from = message.path("from").asText();
                 type = message.path("type").asText();
@@ -203,31 +170,18 @@ public class WhatsAppWebhookService {
                     locationLat = loc.path("latitude").asDouble();
                     locationLng = loc.path("longitude").asDouble();
                     locationName = loc.path("name").asText();
-                    if (locationName == null || locationName.isEmpty()) {
-                        locationName = loc.path("address").asText();
-                    }
                 } else if ("interactive".equals(type)) {
                     JsonNode interactive = message.path("interactive");
-                    String interactiveType = interactive.path("type").asText();
-                    if ("button_reply".equals(interactiveType)) {
-                        JsonNode reply = interactive.path("button_reply");
-                        interactiveReplyId = reply.path("id").asText();
-                        textBody = reply.path("title").asText();
-                    } else if ("list_reply".equals(interactiveType)) {
-                        JsonNode reply = interactive.path("list_reply");
-                        interactiveReplyId = reply.path("id").asText();
-                        textBody = reply.path("title").asText();
-                    }
-                } else if ("image".equals(type)) {
-                    JsonNode img = message.path("image");
-                    textBody = img.path("url").asText();
-                    if (textBody == null || textBody.isEmpty()) {
-                        textBody = img.path("id").asText();
-                    }
+                    String iType = interactive.path("type").asText();
+                    JsonNode reply = "button_reply".equals(iType)
+                            ? interactive.path("button_reply")
+                            : interactive.path("list_reply");
+                    interactiveReplyId = reply.path("id").asText();
+                    textBody = reply.path("title").asText();
                 }
             }
 
-            if (from == null || type == null) {
+            if (from == null || from.isEmpty() || type == null) {
                 log.warn("Webhook payload could not be parsed: from={}, type={}", from, type);
                 return;
             }
@@ -246,8 +200,8 @@ public class WhatsAppWebhookService {
                 log.error("Failed to archive incoming WhatsApp message", logEx);
             }
 
-            log.info("Processing message from: {}, type: {}, body/id: {}", from, type, 
-                interactiveReplyId != null ? interactiveReplyId : textBody);
+            log.info("Processing message from: {}, type: {}, body: {}", from, type,
+                    interactiveReplyId != null ? interactiveReplyId : textBody);
 
             // Broadcast incoming message to WebSocket for live admin monitor
             try {
@@ -264,15 +218,14 @@ public class WhatsAppWebhookService {
             }
 
             chatSessionService.handleMessage(
-                from, 
-                type, 
-                textBody, 
-                locationLat, 
-                locationLng, 
-                locationName, 
+                from,
+                type,
+                textBody,
+                locationLat,
+                locationLng,
+                locationName,
                 interactiveReplyId
             );
-
 
         } catch (Exception e) {
             log.error("Failed to parse WhatsApp webhook payload", e);
