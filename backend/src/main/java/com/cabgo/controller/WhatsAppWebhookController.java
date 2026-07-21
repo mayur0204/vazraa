@@ -42,6 +42,16 @@ public class WhatsAppWebhookController {
     }
 
     /**
+     * Test endpoint for Postman debugging.
+     * Use GET https://messages.bgsinfotech.com/messages/whatsapp/test
+     */
+    @GetMapping("/test")
+    public ResponseEntity<String> testEndpoint() {
+        log.info("=== TEST ENDPOINT HIT FROM POSTMAN ===");
+        return ResponseEntity.ok("VAZRAA_BACKEND_IS_RUNNING");
+    }
+
+    /**
      * Receives incoming WhatsApp message events from AiSensy.
      *
      * Phase 1 (active): Logs the raw body at INFO so Railway logs reveal the
