@@ -19,10 +19,16 @@ public class WhatsAppWebhookService {
     /**
      * Parse the incoming AiSensy Project Webhook payload and route to state machine.
      *
-     * AiSensy Project Webhook sends a flat JSON with these top-level fields:
-     *   phone_number, sender, message_type, message_content, user_name, status, etc.
+     * AiSensy sends payloads in two known formats:
      *
-     * Also handles legacy topic-based and Meta WhatsApp formats as fallback.
+     * Format 1 – Flat (Project Message API):
+     *   { "phone_number": "91...", "sender": "USER", "message_type": "TEXT", "message_content": { "text": "hi" } }
+     *
+     * Format 2 – Topic-based (Project Webhook):
+     *   { "topic": "message.sender.user", "data": { "phone_number": "91...", "message": { "type": "TEXT", "message_content": { "text": "hi" } } } }
+     *
+     * Format 3 – Meta WhatsApp Cloud API (fallback):
+     *   { "entry": [ { "changes": [ { "value": { "messages": [ { "from": "91...", "type": "text", "text": { "body": "hi" } } ] } } ] } ] }
      */
     public void processWebhookPayload(String payload) {
         log.info("Received WhatsApp webhook payload: {}", payload);
@@ -37,12 +43,10 @@ public class WhatsAppWebhookService {
             String locationName = null;
             String interactiveReplyId = null;
 
-            // ── AiSensy Project Webhook format ──────────────────────────────────
-            // Payload has top-level: phone_number, sender, message_type, message_content
-            if (root.has("phone_number")) {
-                log.info("Handling AiSensy Project Webhook format");
+            // ── FORMAT 1: AiSensy Flat format (phone_number at root level) ──────
+            if (root.has("phone_number") && !root.has("topic")) {
+                log.info("Handling AiSensy flat Project Webhook format");
 
-                // Ignore messages sent by the bot itself (AGENT / API / SYSTEM)
                 String senderType = root.path("sender").asText("").trim().toUpperCase();
                 if ("AGENT".equals(senderType) || "API".equals(senderType) || "SYSTEM".equals(senderType)) {
                     log.info("Ignoring outgoing/system message from sender type: {}", senderType);
@@ -53,12 +57,11 @@ public class WhatsAppWebhookService {
                 String messageType = root.path("message_type").asText("").toUpperCase();
                 JsonNode messageContent = root.path("message_content");
 
-                log.info("[Webhook Extractor] Extracted from: {}, message_type: {}", from, messageType);
+                log.info("[Webhook Extractor] Flat format — from: {}, message_type: {}", from, messageType);
 
                 switch (messageType) {
                     case "TEXT", "ROOM_MESSAGE" -> {
                         type = "text";
-                        // Try button_payload first (for quick reply taps), then plain text
                         String buttonPayload = messageContent.path("button_payload").asText("").trim();
                         String rawText = messageContent.path("text").asText("").trim();
                         textBody = buttonPayload.isEmpty() ? rawText : buttonPayload;
@@ -100,55 +103,68 @@ public class WhatsAppWebhookService {
                     }
                 }
 
-            // ── Legacy AiSensy topic-based format ───────────────────────────────
+            // ── FORMAT 2: AiSensy Topic-based format ────────────────────────────
             } else if (root.has("topic")) {
                 String topic = root.path("topic").asText();
-                log.info("Handling AISensy webhook topic: {}", topic);
+                log.info("Handling AiSensy topic-based webhook: {}", topic);
 
                 if ("message.status.updated".equals(topic)) {
-                    log.info("AISensy message status updated - ignoring");
+                    log.info("AiSensy message status updated — ignoring");
                     return;
                 }
 
                 if ("message.sender.user".equals(topic)) {
                     JsonNode data = root.path("data");
                     if (data.isMissingNode()) {
-                        log.warn("AISensy message.sender.user webhook is missing 'data' object");
+                        log.warn("AiSensy message.sender.user webhook is missing 'data' node");
                         return;
                     }
 
-                    JsonNode sender = data.path("sender");
-                    if (!sender.isMissingNode()) {
-                        from = !sender.path("phone_number").isMissingNode()
-                                ? sender.path("phone_number").asText()
-                                : sender.path("phone").isMissingNode()
-                                        ? sender.path("id").asText()
-                                        : sender.path("phone").asText();
+                    // Extract phone number — can be at data.phone_number, data.sender.phone_number
+                    if (!data.path("phone_number").isMissingNode()) {
+                        from = data.path("phone_number").asText("").trim();
+                    } else if (!data.path("sender").path("phone_number").isMissingNode()) {
+                        from = data.path("sender").path("phone_number").asText("").trim();
+                    } else if (!data.path("message").path("phone_number").isMissingNode()) {
+                        from = data.path("message").path("phone_number").asText("").trim();
                     } else {
-                        from = !data.path("phone_number").isMissingNode()
-                                ? data.path("phone_number").asText()
-                                : !data.path("phone").isMissingNode()
-                                        ? data.path("phone").asText()
-                                        : data.path("from").asText();
+                        from = data.path("phone").asText("").trim();
                     }
 
-                    type = data.path("type").asText();
-                    log.info("[Webhook Extractor] topic format — from: {}, type: {}", from, type);
+                    // Extract message node — AiSensy wraps message details under data.message
+                    JsonNode msgNode = data.has("message") ? data.path("message") : data;
+                    JsonNode messageContent = msgNode.has("message_content") ? msgNode.path("message_content") : msgNode;
+
+                    // Extract type
+                    String rawType = msgNode.path("type").asText("");
+                    if (rawType.isEmpty()) rawType = data.path("type").asText("");
+                    if (rawType.isEmpty()) rawType = data.path("message_type").asText("");
+                    type = rawType.toLowerCase();
+
+                    log.info("[Webhook Extractor] Topic format — from: {}, type: {}", from, type);
 
                     if ("text".equals(type)) {
-                        textBody = !data.path("text").path("body").isMissingNode()
-                                ? data.path("text").path("body").asText()
-                                : data.path("body").isObject()
-                                        ? data.path("body").path("text").asText()
-                                        : data.path("body").asText();
+                        textBody = messageContent.path("text").asText("");
+                        if (textBody.isEmpty()) textBody = msgNode.path("text").path("body").asText("");
+                        if (textBody.isEmpty()) textBody = data.path("body").asText("");
+                    } else if ("location".equals(type)) {
+                        locationLat = messageContent.path("latitude").asDouble();
+                        locationLng = messageContent.path("longitude").asDouble();
+                        locationName = messageContent.path("name").asText("");
+                    } else if ("button_reply".equals(type) || "quick_reply".equals(type)) {
+                        type = "text";
+                        textBody = messageContent.path("button_payload").asText("");
+                        if (textBody.isEmpty()) textBody = messageContent.path("text").asText("");
+                        interactiveReplyId = textBody;
                     }
                 } else {
-                    log.info("Ignoring unhandled AISensy topic: {}", topic);
+                    log.info("Ignoring unhandled AiSensy topic: {}", topic);
                     return;
                 }
 
+            // ── FORMAT 3: Meta WhatsApp Cloud API fallback ───────────────────────
             } else {
-                // ── Fallback: Meta WhatsApp Cloud API format ─────────────────────
+                log.info("Handling Meta WhatsApp Cloud API format");
                 JsonNode entry = root.path("entry").get(0);
                 if (entry == null) return;
                 JsonNode change = entry.path("changes").get(0);
@@ -181,12 +197,12 @@ public class WhatsAppWebhookService {
                 }
             }
 
-            if (from == null || from.isEmpty() || type == null) {
+            if (from == null || from.isEmpty() || type == null || type.isEmpty()) {
                 log.warn("Webhook payload could not be parsed: from={}, type={}", from, type);
                 return;
             }
 
-            // Save to historical log (WhatsAppSessions)
+            // Save to historical log
             try {
                 com.cabgo.model.WhatsAppSessions logEntry = com.cabgo.model.WhatsAppSessions.builder()
                         .whatsappPhone(from)
@@ -203,7 +219,7 @@ public class WhatsAppWebhookService {
             log.info("Processing message from: {}, type: {}, body: {}", from, type,
                     interactiveReplyId != null ? interactiveReplyId : textBody);
 
-            // Broadcast incoming message to WebSocket for live admin monitor
+            // Broadcast to WebSocket for live admin monitor
             try {
                 java.util.Map<String, Object> wsMsg = java.util.Map.of(
                     "direction", "incoming",
