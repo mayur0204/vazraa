@@ -143,10 +143,15 @@ public class WhatsAppWebhookService {
 
                     log.info("[Webhook Extractor] Topic format — from: {}, type: {}", from, type);
 
-                    if ("text".equals(type)) {
+                    if ("text".equals(type) || "message".equals(type)) {
+                        // "message" is AiSensy's generic text message type
+                        type = "text";
                         textBody = messageContent.path("text").asText("");
                         if (textBody.isEmpty()) textBody = msgNode.path("text").path("body").asText("");
                         if (textBody.isEmpty()) textBody = data.path("body").asText("");
+                        // Also try message_content directly on the data node
+                        if (textBody.isEmpty()) textBody = data.path("message_content").path("text").asText("");
+                        log.info("[Webhook Extractor] Extracted text: {}", textBody);
                     } else if ("location".equals(type)) {
                         locationLat = messageContent.path("latitude").asDouble();
                         locationLng = messageContent.path("longitude").asDouble();
